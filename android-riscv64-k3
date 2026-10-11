@@ -1,14 +1,15 @@
 [constants]
 aosp = '@DIRNAME@' / '..' / 'aosp'
+android_out = aosp / 'out-k3'
 toolchain = aosp / 'prebuilts/clang/host/linux-x86/clang-r584948b/bin'
-sysroot = aosp / 'out/soong/ndk/sysroot'
+sysroot = android_out / 'soong/ndk/sysroot'
 ndklib = sysroot / 'usr/lib/riscv64-linux-android/current'
-bionic = aosp / 'out/soong/.intermediates/bionic/libc'
+bionic = android_out / 'soong/.intermediates/bionic/libc'
 crtbegin = bionic / 'crtbegin_dynamic/android_riscv64_x100'
 crtend = bionic / 'crtend_android/android_riscv64_x100'
 crtbrand = bionic / 'crtbrand/android_riscv64_x100'
 
-product = aosp / 'out/target/product/k3'
+product = android_out / 'target/product/k3'
 vendorlib64 = product / 'vendor/lib64'
 systemlib64 = product / 'system/lib64'
 

@@ -9,22 +9,25 @@ NC='\033[0m'
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MESA_DIR="$SCRIPT_DIR"
 AOSP_DIR="$(dirname "$SCRIPT_DIR")/aosp"
+AOSP_OUT_DIR=""
 BUILD_NATIVE="build-compiler"
 BUILD_ANDROID="build-riscv64-linux-android"
 SPIRV_HOST_PREFIX="$SCRIPT_DIR/spirv-tools-host"
-MESA_COMPILER_PREFIX="/tmp/mesa-compiler"
+MESA_COMPILER_PREFIX="$SCRIPT_DIR/native-tools"
 SKIP_NATIVE=0
-BOARD="k1"
+BOARD="k3"
 BUILD_ARM64=0
 
 usage() {
     cat <<EOF
-Usage: $(basename "$0") [--aosp=<path>] [--board=<k1|k3|a210>] [--skip-native] [--build-arm64]
+Usage: $(basename "$0") [--aosp=<path>] [--out=<path>] [--board=<k3|a210>] [--skip-native] [--build-arm64]
 
   --aosp=<path>  AOSP tree to build against and deploy into.
                  Default: $(dirname "$SCRIPT_DIR")/aosp
-  --board=<b>    Target board: k1 (SpaceMit K1/X60, default), k3
-                 (SpaceMit K3/X100), or a210 (Zhihe A210 EVB).
+  --out=<path>   Android output tree, absolute or relative to AOSP.
+                 Default: out-k3 or out-a210 for the selected board.
+  --board=<b>    Target board: k3 (SpaceMit K3/X100, default)
+                 or a210 (Zhihe A210 EVB).
   --skip-native  Reuse the native tools already installed in
                  $MESA_COMPILER_PREFIX instead of rebuilding them.
   --build-arm64  Build Mesa PowerVR libraries for arm64 devices.
@@ -35,6 +38,7 @@ EOF
 for arg in "$@"; do
     case "$arg" in
         --aosp=*) AOSP_DIR="${arg#*=}" ;;
+        --out=*) AOSP_OUT_DIR="${arg#*=}" ;;
         --board=*) BOARD="${arg#*=}" ;;
         --skip-native) SKIP_NATIVE=1 ;;
         --build-arm64) BUILD_ARM64=1 ;;
@@ -50,20 +54,16 @@ done
 AOSP_DIR="$(cd "$AOSP_DIR" && pwd)"
 
 case "$BOARD" in
-    k1)
-        CROSS_FILE="$SCRIPT_DIR/android-riscv64"
-        DEVICE_MESA="$AOSP_DIR/device/spacemit/k1/mesa/lib64"
-        LUNCH_TARGET="aosp_bananapi_f3-trunk_staging-userdebug"
-        ;;
     k3)
         CROSS_FILE="$SCRIPT_DIR/android-riscv64-k3"
         BUILD_ANDROID="build-riscv64-linux-android-k3"
-        DEVICE_MESA="$AOSP_DIR/device/spacemit/k1/mesa/lib64"
+        DEVICE_MESA="$AOSP_DIR/device/rise/spacemit/k3/mesa/lib64"
         LUNCH_TARGET="aosp_k3_pico_itx-trunk_staging-userdebug"
         ;;
     a210)
         CROSS_FILE="$SCRIPT_DIR/android-riscv64-a210"
-        DEVICE_MESA="$AOSP_DIR/device/alibaba/a210/mesa/lib64"
+        BUILD_ANDROID="build-riscv64-linux-android-a210"
+        DEVICE_MESA="$AOSP_DIR/device/rise/alibaba/a210/mesa/lib64"
         LUNCH_TARGET="aosp_a210_evb-trunk_staging-userdebug"
         ;;
     rzg2n)
@@ -72,9 +72,15 @@ case "$BOARD" in
         LUNCH_TARGET="hihope_rzg2n-cp2a-userdebug"
         ;;
     *)
-        echo -e "${RED}ERREUR: board inconnu: $BOARD (attendu: k1, k3, a210)${NC}" >&2
+        echo -e "${RED}ERREUR: board inconnu: $BOARD (attendu: k3, a210)${NC}" >&2
         exit 1
         ;;
+esac
+
+AOSP_OUT_DIR="${AOSP_OUT_DIR:-$AOSP_DIR/out-$BOARD}"
+case "$AOSP_OUT_DIR" in
+    /*) ;;
+    *) AOSP_OUT_DIR="$AOSP_DIR/$AOSP_OUT_DIR" ;;
 esac
 
 echo -e "${GREEN}=== Build Mesa PowerVR pour Android riscv64 ($BOARD) ===${NC}"
@@ -264,7 +270,7 @@ Libs: -L\${libdir} -lSPIRV-Tools-link -lSPIRV-Tools-opt -lSPIRV-Tools
 Cflags: -I\${includedir}
 EOF
 
-    rm -rf "$build_dir"
+    echo "SPIRV-Tools build retained at $build_dir"
 
     export PKG_CONFIG_PATH="$SPIRV_HOST_PREFIX/lib/pkgconfig:$PKG_CONFIG_PATH"
     echo -e "${GREEN}✓ SPIRV-Tools $ver (buildé depuis AOSP — shared + opt + link)${NC}"
@@ -292,9 +298,12 @@ if [ "$SKIP_NATIVE" -eq 0 ]; then
     echo -e "${GREEN}=== Étape 1/3: Compilation des outils natifs ===${NC}"
 
     cd "$MESA_DIR"
-    rm -rf "$BUILD_NATIVE"
+    MESON_SETUP_ARGS=()
+    if [ -f "$BUILD_NATIVE/meson-private/coredata.dat" ]; then
+        MESON_SETUP_ARGS=(--reconfigure)
+    fi
 
-    meson setup "$BUILD_NATIVE" \
+    meson setup "${MESON_SETUP_ARGS[@]}" "$BUILD_NATIVE" \
         -Dprefix="$MESA_COMPILER_PREFIX" \
         -Dbuildtype=release \
         -Dstrip=true \
@@ -329,12 +338,15 @@ echo -e "${GREEN}=== Étape 2/3: Cross-compilation pour Android riscv64 ===${NC}
 fi
 
 cd "$MESA_DIR"
-rm -rf "$BUILD_ANDROID"
+MESON_SETUP_ARGS=()
+if [ -f "$BUILD_ANDROID/meson-private/coredata.dat" ]; then
+    MESON_SETUP_ARGS=(--reconfigure)
+fi
 
 CROSS_FILES=(--cross-file "$CROSS_FILE")
-if [ "$BOARD" = "k3" ]; then
+if [ "$BOARD" = "k3" ] || [ "$BOARD" = "a210" ]; then
     mkdir -p "$BUILD_ANDROID"
-    printf "[constants]\naosp = '%s'\n" "$AOSP_DIR" > "$BUILD_ANDROID/aosp.ini"
+    printf "[constants]\naosp = '%s'\nandroid_out = '%s'\n" "$AOSP_DIR" "$AOSP_OUT_DIR" > "$BUILD_ANDROID/aosp.ini"
     CROSS_FILES+=(--cross-file "$BUILD_ANDROID/aosp.ini")
 fi
 
@@ -355,7 +367,7 @@ if [ "$BOARD" = "a210" ] || [ "$BOARD" = "k3" ] || [ "$BUILD_ARM64" -eq 1 ]; the
     unset PKG_CONFIG_PATH
 fi
 
-meson setup "$BUILD_ANDROID" \
+meson setup "${MESON_SETUP_ARGS[@]}" "$BUILD_ANDROID" \
   "${CROSS_FILES[@]}" \
   --prefix=/usr/local \
   -Dplatforms=android \
@@ -414,7 +426,7 @@ deploy "$B/src/gallium/targets/dri/libgallium_dri.so" \
        "$DEVICE_MESA/dri/zink_dri.so"
 deploy "$B/src/gallium/targets/dri/libgallium_dri.so" \
        "$DEVICE_MESA/dri/powervr_dri.so"
-if [ "$BOARD" = "k1" ] || [ "$BOARD" = "k3" ]; then
+if [ "$BOARD" = "k3" ]; then
     deploy "$B/src/gallium/targets/dri/libgallium_dri.so" \
            "$DEVICE_MESA/dri/spacemit_dri.so"
 fi
@@ -469,4 +481,4 @@ echo ""
 echo -e "${GREEN}=== Build + deploy terminé ! ===${NC}"
 echo ""
 echo -e "Pour rebuilder l'AOSP avec les nouvelles libs :"
-echo -e "  ${YELLOW}cd $AOSP_DIR && source build/envsetup.sh && lunch $LUNCH_TARGET && m${NC}"
+echo -e "  ${YELLOW}cd $AOSP_DIR && export OUT_DIR=$AOSP_OUT_DIR && source build/envsetup.sh && lunch $LUNCH_TARGET && m${NC}"
