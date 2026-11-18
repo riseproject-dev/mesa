@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: CC0-1.0
+
+# Mesa passes the libdrm build options to the subproject that provides
+# libdrm, and Meson rejects the options a subproject does not declare.
+# The prebuilt libdrm ignores them.
+option('intel', type : 'feature')
+option('amdgpu', type : 'feature')
